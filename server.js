@@ -170,6 +170,7 @@ app.post('/sendMediaGroup', upload.fields([
         duration: parseInt(req.body.duration) || 1,
       };
       const mimeType = v.mimetype || (v.originalname?.endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
+      console.log("video buffer type:", typeof v.buffer, "size:", v.buffer?.length, "file:", v.originalname);
       const inputMedia = await uploadMedia(peer, v.buffer, 'video', v.originalname || 'video.mp4', mimeType, dims);
       const isFirst = multiMedia.length === 0;
       multiMedia.push(new Api.InputSingleMedia({
