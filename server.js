@@ -112,7 +112,7 @@ async function resolvePeer(chatId) {
   try { return await client.getInputEntity(chatId); }
   catch(e) {
     const idStr = String(chatId).replace(/^-100/, "");
-    return new Api.PeerChannel({ channelId: BigInt(parseInt(idStr)) });
+    return new Api.InputChannel({ channelId: BigInt(parseInt(idStr)), accessHash: BigInt(0) });
   }
 }
 
