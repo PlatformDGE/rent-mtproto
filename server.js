@@ -108,6 +108,14 @@ function extractMessageIds(updates) {
 app.use((req, res, next) => { res.header("Access-Control-Allow-Origin", "*"); res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"); res.header("Access-Control-Allow-Headers", "Content-Type"); if (req.method === "OPTIONS") return res.sendStatus(200); next(); });
 app.use(express.json({ limit: "10mb" }));
 
+async function resolvePeer(chatId) {
+  try { return await client.getInputEntity(chatId); }
+  catch(e) {
+    const idStr = String(chatId).replace(/^-100/, "");
+    return new Api.PeerChannel({ channelId: BigInt(parseInt(idStr)) });
+  }
+}
+
 // Health check
 app.get('/', (req, res) => res.json({ ok: true, status: 'MTProto service running' }));
 
@@ -117,7 +125,7 @@ app.post('/sendMessage', express.json(), async (req, res) => {
     const { chatId, topicId, text } = req.body;
     const parsed = await parseCaption(text);
     const result = await client.invoke(new Api.messages.SendMessage({
-      peer: await client.getInputEntity(chatId),
+      peer: await resolvePeer(chatId),
       replyTo: topicId ? new Api.InputReplyToMessage({ replyToMsgId: topicId }) : undefined,
       message: parsed.text,
       randomId: generateRandomBigInt(),
@@ -141,7 +149,7 @@ app.post('/sendMediaGroup', upload.fields([
     const photos = req.files?.['photos[]'] || [];
     const videoFiles = req.files?.['video'] || [];
 
-    const peer = await client.getInputEntity(chatId);
+    const peer = await resolvePeer(chatId);
     const multiMedia = [];
     const parsed = await parseCaption(caption);
 
@@ -202,7 +210,7 @@ app.post('/sendDocument', upload.single('file'), async (req, res) => {
     const f = req.file;
     if (!f) return res.json({ ok: false, description: 'No file' });
 
-    const peer = await client.getInputEntity(chatId);
+    const peer = await resolvePeer(chatId);
     const file = new CustomFile(f.originalname || 'file', f.buffer.length, '', f.buffer);
     const fileHandle = await client.uploadFile({ file, workers: 4 });
 
@@ -232,7 +240,7 @@ app.post('/sendDocument', upload.single('file'), async (req, res) => {
 app.post('/forwardMessage', express.json(), async (req, res) => {
   try {
     const { chatId, topicId, fromChatId, messageId } = req.body;
-    const peer     = await client.getInputEntity(chatId);
+    const peer     = await resolvePeer(chatId);
     const fromPeer = await client.getInputEntity(fromChatId);
     const threadId = topicId ? parseInt(topicId) : undefined;
 
