@@ -46,8 +46,20 @@ async function parseCaption(html) {
 
 // Загрузить медиафайл в Telegram
 async function uploadMedia(peer, buffer, type, fileName, mimeType, dims) {
-  const file = new CustomFile(fileName, buffer.length, undefined, Buffer.from(buffer));
-  const fileHandle = await client.uploadFile({ file, workers: 4 });
+  const { writeFile, unlink } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { randomUUID } = await import("node:crypto");
+  const ext = fileName.split(".").pop() || "bin";
+  const tmpPath = join(tmpdir(), randomUUID() + "." + ext);
+  await writeFile(tmpPath, Buffer.from(buffer));
+  const file = new CustomFile(fileName, buffer.length, tmpPath);
+  let fileHandle;
+  try {
+    fileHandle = await client.uploadFile({ file, workers: 4 });
+  } finally {
+    await unlink(tmpPath).catch(() => {});
+  }
 
   if (type === 'video') {
     const attrs = [
