@@ -207,7 +207,7 @@ app.post('/sendDocument', upload.single('file'), async (req, res) => {
     if (!f) return res.json({ ok: false, description: 'No file' });
 
     const peer = await resolvePeer(chatId);
-    const file = new CustomFile(f.originalname || 'file', f.buffer.length, '', f.buffer);
+    const file = new CustomFile(f.originalname || 'file', f.buffer.length, undefined, Buffer.from(f.buffer));
     const fileHandle = await client.uploadFile({ file, workers: 4 });
 
     const media = new Api.InputMediaUploadedDocument({
