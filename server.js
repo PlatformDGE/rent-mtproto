@@ -212,8 +212,9 @@ app.post('/sendMediaGroup', upload.fields([
       if (videoFile) {
         console.log(`Uploading video: ${videoFile.name} (${(videoFile.buffer.length/1024/1024).toFixed(1)}MB)`);
         jobs.set(jobId, { status: 'uploading_video', progress: 80, result: null, error: null });
-        const mimeType = videoFile.mime || (videoFile.name.endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
-        const inputMedia = await uploadMedia(peer, videoFile.buffer, 'video', videoFile.name, mimeType, dims);
+        const mimeType = 'video/mp4';
+        const videoName = videoFile.name.replace(/\.(mov|m4v)$/i, '.mp4');
+        const inputMedia = await uploadMedia(peer, videoFile.buffer, 'video', videoName, mimeType, dims);
         const isFirst = multiMedia.length === 0;
         multiMedia.push(new Api.InputSingleMedia({
           media: inputMedia,
