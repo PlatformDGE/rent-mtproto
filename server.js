@@ -9,6 +9,9 @@ import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 
 const app  = express();
 const PORT = process.env.PORT || 8080;
@@ -27,6 +30,18 @@ const upload = multer({
 });
 
 let client;
+
+async function convertToMp4(inputPath, outputPath) {
+  await execFileAsync('ffmpeg', [
+    '-i', inputPath,
+    '-c:v', 'libx264',
+    '-preset', 'fast',
+    '-crf', '28',
+    '-c:a', 'aac',
+    '-movflags', '+faststart',
+    '-y', outputPath
+  ]);
+}
 
 async function initClient() {
   client = new TelegramClient(
@@ -47,15 +62,34 @@ async function parseCaption(html) {
 }
 
 async function uploadMedia(peer, buffer, type, fileName, mimeType, dims) {
-  const ext = fileName.split('.').pop() || 'bin';
+  let ext = fileName.split('.').pop() || 'bin';
   const tmpPath = join(tmpdir(), randomUUID() + '.' + ext);
   await writeFile(tmpPath, Buffer.from(buffer));
-  const file = new CustomFile(fileName, buffer.length, tmpPath);
+  let uploadPath = tmpPath;
+  let uploadSize = buffer.length;
+  let convertedPath = null;
+  if (type === 'video' && (ext === 'mov' || ext === 'MOV' || ext === 'm4v')) {
+    convertedPath = join(tmpdir(), randomUUID() + '.mp4');
+    try {
+      await convertToMp4(tmpPath, convertedPath);
+      uploadPath = convertedPath;
+      const { statSync } = await import('node:fs');
+      uploadSize = statSync(convertedPath).size;
+      ext = 'mp4';
+      fileName = fileName.replace(/\.(mov|MOV|m4v)$/, '.mp4');
+      mimeType = 'video/mp4';
+      console.log('Converted to mp4:', uploadSize, 'bytes');
+    } catch(e) {
+      console.warn('ffmpeg conversion failed, using original:', e.message);
+    }
+  }
+  const file = new CustomFile(fileName, uploadSize, uploadPath);
   let fileHandle;
   try {
     fileHandle = await client.uploadFile({ file, workers: 4 });
   } finally {
     await unlink(tmpPath).catch(() => {});
+    if (convertedPath) await unlink(convertedPath).catch(() => {});
   }
 
   if (type === 'video') {
