@@ -5,19 +5,22 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { CustomFile } from 'telegram/client/uploads.js';
 import { generateRandomBigInt } from 'telegram/Helpers.js';
 import { _parseMessageText } from 'telegram/client/messageParse.js';
-import { writeFile, unlink, readFile } from 'node:fs/promises';
+import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const app  = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 const API_ID      = Number(process.env.TELEGRAM_API_ID);
 const API_HASH    = process.env.TELEGRAM_API_HASH;
 const SESSION_STR = process.env.TELEGRAM_SESSION;
 
-// Multer — файлы в память (до 500MB)
+// Хранилище задач в памяти
+const jobs = new Map(); // jobId → { status, result, error }
+
+// Multer — файлы в память
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 500 * 1024 * 1024 },
@@ -37,21 +40,15 @@ async function initClient() {
   console.log(`✅ Telegram MTProto connected as ${me.firstName} (id: ${me.id})`);
 }
 
-// Парсим HTML caption в entities
 async function parseCaption(html) {
   if (!html) return { text: '', entities: [] };
   const parsed = await _parseMessageText(client, html, 'html');
   return { text: parsed[0] || '', entities: parsed[1] || [] };
 }
 
-// Загрузить медиафайл в Telegram
 async function uploadMedia(peer, buffer, type, fileName, mimeType, dims) {
-  const { writeFile, unlink } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { randomUUID } = await import("node:crypto");
-  const ext = fileName.split(".").pop() || "bin";
-  const tmpPath = join(tmpdir(), randomUUID() + "." + ext);
+  const ext = fileName.split('.').pop() || 'bin';
+  const tmpPath = join(tmpdir(), randomUUID() + '.' + ext);
   await writeFile(tmpPath, Buffer.from(buffer));
   const file = new CustomFile(fileName, buffer.length, tmpPath);
   let fileHandle;
@@ -91,7 +88,6 @@ async function uploadMedia(peer, buffer, type, fileName, mimeType, dims) {
     throw new Error(`Video upload failed: ${result.className}`);
   }
 
-  // Фото
   const uploaded = new Api.InputMediaUploadedPhoto({ file: fileHandle });
   const result = await client.invoke(
     new Api.messages.UploadMedia({ peer, media: uploaded })
@@ -117,24 +113,36 @@ function extractMessageIds(updates) {
   return [];
 }
 
-app.use((req, res, next) => { res.header("Access-Control-Allow-Origin", "*"); res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"); res.header("Access-Control-Allow-Headers", "Content-Type"); if (req.method === "OPTIONS") return res.sendStatus(200); next(); });
-app.use(express.json({ limit: "10mb" }));
+// CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
-async function resolvePeer(chatId) {
-  return await client.getInputEntity(chatId);
-}
+app.use(express.json({ limit: '10mb' }));
 
 // Health check
 app.get('/', (req, res) => res.json({ ok: true, status: 'MTProto service running' }));
 
+// Polling — проверить статус задачи
+app.get('/job/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) return res.json({ ok: false, description: 'Job not found' });
+  res.json(job);
+});
+
 // ── sendMessage ──────────────────────────────────────────────────────────────
-app.post('/sendMessage', express.json(), async (req, res) => {
+app.post('/sendMessage', async (req, res) => {
   try {
     const { chatId, topicId, text } = req.body;
     const parsed = await parseCaption(text);
+    const peer = await client.getInputEntity(chatId);
     const result = await client.invoke(new Api.messages.SendMessage({
-      peer: await resolvePeer(chatId),
-      replyTo: topicId ? new Api.InputReplyToMessage({ replyToMsgId: topicId }) : undefined,
+      peer,
+      replyTo: topicId ? new Api.InputReplyToMessage({ replyToMsgId: parseInt(topicId) }) : undefined,
       message: parsed.text,
       randomId: generateRandomBigInt(),
       noWebpage: true,
@@ -143,85 +151,118 @@ app.post('/sendMessage', express.json(), async (req, res) => {
     const ids = extractMessageIds(result);
     res.json({ ok: true, result: { message_id: ids[0] } });
   } catch (e) {
+    console.error('sendMessage error:', e.message);
     res.json({ ok: false, description: e.message });
   }
 });
 
-// ── sendMediaGroup (фото + видео одним альбомом) ─────────────────────────────
+// ── sendMediaGroup ASYNC — сразу возвращает jobId ────────────────────────────
 app.post('/sendMediaGroup', upload.fields([
   { name: 'photos[]', maxCount: 10 },
   { name: 'video',    maxCount: 1  },
 ]), async (req, res) => {
-  try {
-    const { chatId, topicId, caption } = req.body;
-    const photos = req.files?.['photos[]'] || [];
-    const videoFiles = req.files?.['video'] || [];
+  const jobId = randomUUID();
+  jobs.set(jobId, { status: 'pending', result: null, error: null });
 
-    const peer = await resolvePeer(chatId);
-    const multiMedia = [];
-    const parsed = await parseCaption(caption);
+  // Сразу отвечаем
+  res.json({ ok: true, jobId });
 
-    // Загружаем фото
-    for (let i = 0; i < photos.length; i++) {
-      const f = photos[i];
-      const inputMedia = await uploadMedia(peer, f.buffer, 'photo', f.originalname || 'photo.jpg', f.mimetype);
-      multiMedia.push(new Api.InputSingleMedia({
-        media: inputMedia,
-        randomId: generateRandomBigInt(),
-        message: i === 0 ? parsed.text : '',
-        ...(i === 0 && parsed.entities.length > 0 ? { entities: parsed.entities } : {}),
+  // Сохраняем данные из req до async обработки
+  const chatId   = req.body.chatId;
+  const topicId  = req.body.topicId;
+  const caption  = req.body.caption || '';
+  const photos   = (req.files?.['photos[]'] || []).map(f => ({
+    buffer: f.buffer, name: f.originalname || 'photo.jpg', mime: f.mimetype
+  }));
+  const videoArr = req.files?.['video'] || [];
+  const videoFile = videoArr.length > 0 ? {
+    buffer: videoArr[0].buffer,
+    name:   videoArr[0].originalname || 'video.mp4',
+    mime:   videoArr[0].mimetype,
+  } : null;
+  const dims = {
+    width:    parseInt(req.body.width)    || 1280,
+    height:   parseInt(req.body.height)   || 720,
+    duration: parseInt(req.body.duration) || 1,
+  };
+
+  // Выполняем в фоне
+  (async () => {
+    try {
+      jobs.set(jobId, { status: 'uploading', progress: 0, result: null, error: null });
+      const peer = await client.getInputEntity(chatId);
+      const multiMedia = [];
+      const parsed = await parseCaption(caption);
+
+      // Фото
+      for (let i = 0; i < photos.length; i++) {
+        const p = photos[i];
+        console.log(`Uploading photo ${i+1}/${photos.length}`);
+        jobs.set(jobId, { status: 'uploading', progress: Math.round(i / (photos.length + (videoFile ? 1 : 0)) * 80), result: null, error: null });
+        const inputMedia = await uploadMedia(peer, p.buffer, 'photo', p.name, p.mime);
+        multiMedia.push(new Api.InputSingleMedia({
+          media: inputMedia,
+          randomId: generateRandomBigInt(),
+          message: i === 0 ? parsed.text : '',
+          ...(i === 0 && parsed.entities.length > 0 ? { entities: parsed.entities } : {}),
+        }));
+      }
+
+      // Видео
+      if (videoFile) {
+        console.log(`Uploading video: ${videoFile.name} (${(videoFile.buffer.length/1024/1024).toFixed(1)}MB)`);
+        jobs.set(jobId, { status: 'uploading_video', progress: 80, result: null, error: null });
+        const mimeType = videoFile.mime || (videoFile.name.endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
+        const inputMedia = await uploadMedia(peer, videoFile.buffer, 'video', videoFile.name, mimeType, dims);
+        const isFirst = multiMedia.length === 0;
+        multiMedia.push(new Api.InputSingleMedia({
+          media: inputMedia,
+          randomId: generateRandomBigInt(),
+          message: isFirst ? parsed.text : '',
+          ...(isFirst && parsed.entities.length > 0 ? { entities: parsed.entities } : {}),
+        }));
+      }
+
+      if (multiMedia.length === 0) throw new Error('No media');
+
+      console.log(`Sending album with ${multiMedia.length} items`);
+      jobs.set(jobId, { status: 'sending', progress: 95, result: null, error: null });
+
+      const threadId = topicId ? parseInt(topicId) : undefined;
+      const result = await client.invoke(new Api.messages.SendMultiMedia({
+        peer,
+        multiMedia,
+        ...(threadId ? { replyTo: new Api.InputReplyToMessage({ replyToMsgId: threadId }) } : {}),
       }));
+
+      const ids = extractMessageIds(result);
+      console.log(`Album sent, message ids: ${ids}`);
+      jobs.set(jobId, { status: 'done', progress: 100, result: { message_ids: ids, message_id: ids[0] }, error: null });
+    } catch (e) {
+      console.error('sendMediaGroup job error:', e.message);
+      jobs.set(jobId, { status: 'error', progress: 0, result: null, error: e.message });
     }
-
-    // Загружаем видео
-    if (videoFiles.length > 0) {
-      const v = videoFiles[0];
-      const dims = {
-        width:    parseInt(req.body.width)    || 1280,
-        height:   parseInt(req.body.height)   || 720,
-        duration: parseInt(req.body.duration) || 1,
-      };
-      const mimeType = v.mimetype || (v.originalname?.endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
-      console.log("video buffer type:", typeof v.buffer, "size:", v.buffer?.length, "file:", v.originalname);
-      const inputMedia = await uploadMedia(peer, v.buffer, 'video', v.originalname || 'video.mp4', mimeType, dims);
-      const isFirst = multiMedia.length === 0;
-      multiMedia.push(new Api.InputSingleMedia({
-        media: inputMedia,
-        randomId: generateRandomBigInt(),
-        message: isFirst ? parsed.text : '',
-        ...(isFirst && parsed.entities.length > 0 ? { entities: parsed.entities } : {}),
-      }));
-    }
-
-    if (multiMedia.length === 0) {
-      return res.json({ ok: false, description: 'No media' });
-    }
-
-    const threadId = topicId ? parseInt(topicId) : undefined;
-    const result = await client.invoke(new Api.messages.SendMultiMedia({
-      peer,
-      multiMedia,
-      ...(threadId ? { replyTo: new Api.InputReplyToMessage({ replyToMsgId: threadId }) } : {}),
-    }));
-
-    const ids = extractMessageIds(result);
-    res.json({ ok: true, result: { message_ids: ids, message_id: ids[0] } });
-  } catch (e) {
-    console.error('sendMediaGroup error:', e);
-    res.json({ ok: false, description: e.message });
-  }
+  })();
 });
 
-// ── sendDocument (оригинальное фото как документ) ────────────────────────────
+// ── sendDocument ─────────────────────────────────────────────────────────────
 app.post('/sendDocument', upload.single('file'), async (req, res) => {
   try {
     const { chatId, topicId } = req.body;
     const f = req.file;
     if (!f) return res.json({ ok: false, description: 'No file' });
 
-    const peer = await resolvePeer(chatId);
-    const file = new CustomFile(f.originalname || 'file', f.buffer.length, undefined, Buffer.from(f.buffer));
-    const fileHandle = await client.uploadFile({ file, workers: 4 });
+    const peer = await client.getInputEntity(chatId);
+    const ext = (f.originalname || 'file').split('.').pop() || 'bin';
+    const tmpPath = join(tmpdir(), randomUUID() + '.' + ext);
+    await writeFile(tmpPath, Buffer.from(f.buffer));
+    const file = new CustomFile(f.originalname || 'file', f.buffer.length, tmpPath);
+    let fileHandle;
+    try {
+      fileHandle = await client.uploadFile({ file, workers: 4 });
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+    }
 
     const media = new Api.InputMediaUploadedDocument({
       file: fileHandle,
@@ -241,18 +282,18 @@ app.post('/sendDocument', upload.single('file'), async (req, res) => {
     const ids = extractMessageIds(result);
     res.json({ ok: true, result: { message_id: ids[0] } });
   } catch (e) {
+    console.error('sendDocument error:', e.message);
     res.json({ ok: false, description: e.message });
   }
 });
 
 // ── forwardMessage ────────────────────────────────────────────────────────────
-app.post('/forwardMessage', express.json(), async (req, res) => {
+app.post('/forwardMessage', async (req, res) => {
   try {
     const { chatId, topicId, fromChatId, messageId } = req.body;
-    const peer     = await resolvePeer(chatId);
+    const peer     = await client.getInputEntity(chatId);
     const fromPeer = await client.getInputEntity(fromChatId);
     const threadId = topicId ? parseInt(topicId) : undefined;
-
     const result = await client.invoke(new Api.messages.ForwardMessages({
       fromPeer,
       id: [parseInt(messageId)],
@@ -260,13 +301,20 @@ app.post('/forwardMessage', express.json(), async (req, res) => {
       randomId: [generateRandomBigInt()],
       ...(threadId ? { topMsgId: threadId } : {}),
     }));
-
     const ids = extractMessageIds(result);
     res.json({ ok: true, result: { message_id: ids[0] } });
   } catch (e) {
     res.json({ ok: false, description: e.message });
   }
 });
+
+// Чистим старые jobs каждые 10 минут
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [id, job] of jobs) {
+    if (job.createdAt && job.createdAt < cutoff) jobs.delete(id);
+  }
+}, 10 * 60 * 1000);
 
 initClient()
   .then(() => {
