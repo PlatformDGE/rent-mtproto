@@ -57,8 +57,25 @@ async function initClient() {
 
 async function parseCaption(html) {
   if (!html) return { text: '', entities: [] };
-  const parsed = await _parseMessageText(client, html, 'html');
-  return { text: parsed[0] || '', entities: parsed[1] || [] };
+  const finalEntities = [];
+  let finalText = '';
+  const re = /<a href="([^"]+)">([^<]+)<\/a>/g;
+  let prev = 0;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    finalText += html.slice(prev, m.index);
+    const startOffset = [...finalText].length;
+    finalText += m[2];
+    finalEntities.push(new Api.MessageEntityTextUrl({
+      offset: startOffset,
+      length: [...m[2]].length,
+      url: m[1],
+    }));
+    prev = m.index + m[0].length;
+  }
+  finalText += html.slice(prev);
+  finalText = finalText.replace(/<[^>]+>/g, '');
+  return { text: finalText, entities: finalEntities };
 }
 
 async function uploadMedia(peer, buffer, type, fileName, mimeType, dims) {
