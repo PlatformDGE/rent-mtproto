@@ -64,11 +64,12 @@ async function parseCaption(html) {
   let m;
   while ((m = re.exec(html)) !== null) {
     finalText += html.slice(prev, m.index);
-    const startOffset = [...finalText].length;
+    const startOffset = Buffer.from(finalText, 'utf-16le').length / 2;
     finalText += m[2];
+    const length = Buffer.from(m[2], 'utf-16le').length / 2;
     finalEntities.push(new Api.MessageEntityTextUrl({
       offset: startOffset,
-      length: [...m[2]].length,
+      length,
       url: m[1],
     }));
     prev = m.index + m[0].length;
