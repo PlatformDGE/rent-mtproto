@@ -190,6 +190,7 @@ app.post('/sendMessage', async (req, res) => {
   try {
     const { chatId, topicId, text } = req.body;
     const parsed = await parseCaption(text);
+    console.log('entities count:', parsed.entities.length, parsed.entities.map(e => e.className + ':' + e.url).join(', '));
     const peer = await client.getInputEntity(chatId);
     const result = await client.invoke(new Api.messages.SendMessage({
       peer,
