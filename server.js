@@ -79,14 +79,14 @@ async function parseCaption(html) {
   return { text: finalText, entities: finalEntities };
 }
 
-async function uploadMedia(peer, buffer, type, fileName, mimeType, dims) {
+async function uploadMedia(peer, buffer, type, fileName, mimeType, dims, convert = false) {
   let ext = fileName.split('.').pop() || 'bin';
   const tmpPath = join(tmpdir(), randomUUID() + '.' + ext);
   await writeFile(tmpPath, Buffer.from(buffer));
   let uploadPath = tmpPath;
   let uploadSize = buffer.length;
   let convertedPath = null;
-  if (type === 'video' && (ext === 'mov' || ext === 'MOV' || ext === 'm4v')) {
+  if (convert && type === 'video' && (ext === 'mov' || ext === 'MOV' || ext === 'm4v')) {
     convertedPath = join(tmpdir(), randomUUID() + '.mp4');
     try {
       await convertToMp4(tmpPath, convertedPath);
@@ -267,7 +267,7 @@ app.post('/sendMediaGroup', upload.fields([
         jobs.set(jobId, { status: 'uploading_video', progress: 80, result: null, error: null });
         const mimeType = 'video/mp4';
         const videoName = videoFile.name.replace(/\.(mov|m4v)$/i, '.mp4');
-        const inputMedia = await uploadMedia(peer, videoFile.buffer, 'video', videoName, mimeType, dims);
+        const inputMedia = await uploadMedia(peer, videoFile.buffer, 'video', videoName, mimeType, dims, true);
         const isFirst = multiMedia.length === 0;
         multiMedia.push(new Api.InputSingleMedia({
           media: inputMedia,
