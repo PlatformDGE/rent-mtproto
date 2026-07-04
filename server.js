@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import sharp from 'sharp';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
@@ -140,7 +141,7 @@ async function uploadMedia(peer, buffer, type, fileName, mimeType, dims, convert
     throw new Error(`Video upload failed: ${result.className}`);
   }
 
-  const uploaded = new Api.InputMediaUploadedPhoto({ file: fileHandle });
+  let finalBuffer = Buffer.from(buffer); let finalName = fileName.replace(/\.[^.]+$/, '.jpg'); try { finalBuffer = await sharp(Buffer.from(buffer)).rotate().jpeg({ quality: 92 }).toBuffer(); } catch(e) { console.warn('sharp:', e.message); finalBuffer = Buffer.from(buffer); finalName = fileName; } const photoFile2 = new CustomFile(finalName, finalBuffer.length, undefined, finalBuffer); const photoHandle2 = await client.uploadFile({ file: photoFile2, workers: 4 }); const uploaded = new Api.InputMediaUploadedPhoto({ file: photoHandle2 });
   const result = await client.invoke(
     new Api.messages.UploadMedia({ peer, media: uploaded })
   );
