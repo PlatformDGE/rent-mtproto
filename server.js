@@ -253,7 +253,11 @@ app.post('/sendMediaGroup', upload.fields([
         const p = photos[i];
         console.log(`Uploading photo ${i+1}/${photos.length}`);
         jobs.set(jobId, { status: 'uploading', progress: Math.round(i / (photos.length + (videoFile ? 1 : 0)) * 80), result: null, error: null });
-        const inputMedia = await uploadMedia(peer, p.buffer, 'photo', p.name, p.mime);
+        let photoBuffer = Buffer.from(p.buffer);
+        try {
+          photoBuffer = await sharp(photoBuffer).rotate().jpeg({ quality: 92 }).toBuffer();
+        } catch(e) { console.warn('sharp photo error:', e.message); }
+        const inputMedia = await uploadMedia(peer, photoBuffer, 'photo', p.name.replace(/\.[^.]+$/, '.jpg'), 'image/jpeg');
         multiMedia.push(new Api.InputSingleMedia({
           media: inputMedia,
           randomId: generateRandomBigInt(),
