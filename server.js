@@ -1,10 +1,10 @@
 import express from 'express';
 import multer from 'multer';
-import { TelegramClient, Api } from 'telegram';
-import { StringSession } from 'telegram/sessions/index.js';
-import { CustomFile } from 'telegram/client/uploads.js';
-import { generateRandomBigInt } from 'telegram/Helpers.js';
-import { _parseMessageText } from 'telegram/client/messageParse.js';
+import { TelegramClient, Api } from 'teleproto';
+import { StringSession } from 'teleproto/sessions/index.js';
+import { CustomFile } from 'teleproto/client/uploads.js';
+import { generateRandomBigInt } from 'teleproto/Helpers.js';
+import { _parseMessageText } from 'teleproto/client/messageParse.js';
 import { writeFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
