@@ -1,3 +1,4 @@
+// Made with Claude (Anthropic) · © Homes in Georgia · Created by Irakli Kvirkvelia
 import express from 'express';
 import multer from 'multer';
 import { TelegramClient, Api } from 'teleproto';
